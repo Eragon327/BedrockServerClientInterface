@@ -29,18 +29,12 @@
 #include <mc/world/level/dimension/Dimension.h>
 
 
-MolangMemberArray::MolangMemberArray()                                                 = default;
-MolangMemberArray::MolangMemberArray(MolangMemberArray const&)                         = default;
-SpawnParticleEffectPacket::SpawnParticleEffectPacket(SpawnParticleEffectPacket const&) = default;
-// MolangScriptArg::MolangScriptArg() = default;
-// MolangVariableMap::MolangVariableMap(MolangVariableMap const& rhs) {
-//     mMapFromVariableIndexToVariableArrayOffset =
-//     rhs.mMapFromVariableIndexToVariableArrayOffset; mVariables = {}; for (auto& ptr :
-//     *rhs.mVariables) {
-//         mVariables->push_back(std::make_unique<MolangVariable>(*ptr));
-//     }
-//     mHasPublicVariables = rhs.mHasPublicVariables;
-// }
+MolangMemberArray::MolangMemberArray() = default;
+MolangVariableMap::MolangVariableMap() {
+    mMapFromVariableIndexToVariableArrayOffset = {};
+    mVariables                                 = {};
+    mHasPublicVariables                        = false;
+};
 
 namespace bsci {
 // std::unique_ptr<GeometryGroup> GeometryGroup::createDefault() {
@@ -170,7 +164,7 @@ GeometryGroup::GeoId ParticleSpawner::line(
         dim,
         (begin + end) * 0.5f,
         color.a == 1 ? "bsci:line" : "bsci:blend_line",
-        std::move(var)
+        var
     );
 }
 
@@ -188,7 +182,7 @@ GeometryGroup::GeoId ParticleSpawner::point(
         )}
     );
     addTint(var, color);
-    return particle(dim, pos, color.a == 1 ? "bsci:point" : "bsci:blend_point", std::move(var));
+    return particle(dim, pos, color.a == 1 ? "bsci:point" : "bsci:blend_point", var);
 }
 
 bool ParticleSpawner::remove(GeoId id) {
