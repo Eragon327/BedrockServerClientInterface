@@ -45,9 +45,9 @@ public:
     ll::ConcurrentDenseMap<GeoId, std::vector<std::shared_ptr<PrimitiveShapesPacket>>>
         geoPackets; // bool = true 表示启用ParticleSpawner
     ll::ConcurrentDenseMap<std::pair<ChunkPos, int>, std::vector<PacketPair>>
-        chunkPackets; // 不应包含使用ParticleSpawner的GeoId
+                                          chunkPackets; // 不应包含使用ParticleSpawner的GeoId
     ll::ConcurrentDenseMap<GeoId, Target> targets;
-    std::recursive_mutex                 structureMutex;
+    std::recursive_mutex                  structureMutex;
 
 public:
     // void sendPacketImmediately(DebugDrawerPacket& pkt) {
@@ -63,10 +63,13 @@ public:
         if (!packet || packet->mShapes->empty()) return;
         auto const& shape = (*packet->mShapes)[0];
         if (!shape.mLocation->has_value() || !shape.mDimensionId->has_value()) return;
-        auto key = std::make_pair(ChunkPos(shape.mLocation->value()), (int)shape.mDimensionId->value());
+        auto key =
+            std::make_pair(ChunkPos(shape.mLocation->value()), (int)shape.mDimensionId->value());
         chunkPackets.erase_if(key, [geoId](auto&& kv) {
             auto& packetPairs = kv.second;
-            std::erase_if(packetPairs, [geoId](auto&& pair) { return pair.first.value == geoId.value; });
+            std::erase_if(packetPairs, [geoId](auto&& pair) {
+                return pair.first.value == geoId.value;
+            });
             return packetPairs.empty();
         });
     }
@@ -407,7 +410,9 @@ GeometryGroup::GeoId DebugDrawingHandler::arrow(
         ids.emplace_back(line(dim, lastPos, currentPos, color, std::nullopt, target));
         lastPos = currentPos;
     }
-    ids.emplace_back(arrow(dim, currentPos, end, color, mArrowHeadLength, mArrowHeadRadius, target));
+    ids.emplace_back(
+        arrow(dim, currentPos, end, color, mArrowHeadLength, mArrowHeadRadius, target)
+    );
     return merge(ids);
 }
 
@@ -516,7 +521,6 @@ size_t DebugDrawingHandler::removeFor(mce::UUID const& uuid) {
         for (auto& packet : packets) {
             if (emptied) impl->unindexPacket(id, packet);
 
-            // 形状仍对其他人可见时，不能改原包，复制一份只给被摘掉的玩家
             std::shared_ptr<PrimitiveShapesPacket> removal = packet;
             if (!emptied) removal = std::make_shared<PrimitiveShapesPacket>(*packet);
             if (!removal || removal->mShapes->empty()) continue;
@@ -541,16 +545,16 @@ GeometryGroup::GeoId DebugDrawingHandler::merge(std::span<GeoId> ids) {
     if (ids.empty()) {
         return GeoId::invalid();
     }
-    std::lock_guard l{impl->structureMutex};
+    std::lock_guard                                     l{impl->structureMutex};
     ll::ConcurrentDenseMap<std::pair<ChunkPos, int>,
                            std::vector<GeoId>>          temMap;     // 用来处理包的合并
     std::vector<std::shared_ptr<PrimitiveShapesPacket>> newPackets; // 合并后的包队列
-    Target                                             mergedTarget = Target::None();
+    Target                                              mergedTarget = Target::None();
 
     // 移出旧id的geoPackets
     for (auto& id : ids) {
         impl->targets.erase_if(id, [&mergedTarget](auto&& kv) {
-            mergedTarget = Target::unite(mergedTarget, kv.second);
+            mergedTarget = Target::merge(mergedTarget, kv.second);
             return true;
         });
         impl->geoPackets.erase_if(id, [id, &temMap, &newPackets](auto&& kv) {
@@ -624,18 +628,24 @@ GeometryGroup::GeoId DebugDrawingHandler::merge(std::span<GeoId> ids) {
     return newId;
 }
 
-bool DebugDrawingHandler::shift(GeoId id, Vec3 const& v) {
+bool DebugDrawingHandler::shift(GeoId id, Vec3 const& deltaPos) {
     if (id.value == 0) return false;
 
     std::lock_guard l{impl->structureMutex};
-    return impl->geoPackets.modify_if(id, [this, id, v](auto&& kv) {
+
+    Target target = Target::All();
+    if (auto it = impl->targets.find(id); it != impl->targets.end()) {
+        target = it->second;
+    }
+
+    return impl->geoPackets.modify_if(id, [this, id, deltaPos, target](auto&& kv) {
         auto& packets = kv.second;
         ll::ConcurrentDenseMap<
             std::pair<ChunkPos, int>,
             std::vector<std::weak_ptr<PrimitiveShapesPacket>>>
             temMap; // 用来处理shape跨区块
 
-        std::erase_if(packets, [&temMap, &v](auto&& packet) {
+        std::erase_if(packets, [&temMap, &deltaPos](auto&& packet) {
             if (packet && !packet->mShapes->empty() && (*packet->mShapes)[0].mLocation->has_value()
                 && (*packet->mShapes)[0].mDimensionId->has_value()) {
                 auto chunkPos = ChunkPos((*packet->mShapes)[0].mLocation->value());
@@ -647,14 +657,15 @@ bool DebugDrawingHandler::shift(GeoId id, Vec3 const& v) {
                 // 处理移动后的包
                 for (auto& shape : *packet->mShapes) {
                     if (shape.mLocation->has_value()) {
-                        shape.mLocation->value() += v;
+                        shape.mLocation->value() += deltaPos;
                         if (std::holds_alternative<ArrowDataPayload>(*shape.mExtraDataPayload)) {
                             std::get<ArrowDataPayload>(*shape.mExtraDataPayload)
-                                .mEndLocation->value() += v;
+                                .mEndLocation->value() += deltaPos;
                         } else if (std::holds_alternative<LineDataPayload>(
                                        *shape.mExtraDataPayload
                                    )) {
-                            *std::get<LineDataPayload>(*shape.mExtraDataPayload).mEndLocation += v;
+                            *std::get<LineDataPayload>(*shape.mExtraDataPayload).mEndLocation +=
+                                deltaPos;
                         }
                     }
                 }
@@ -701,16 +712,20 @@ bool DebugDrawingHandler::shift(GeoId id, Vec3 const& v) {
                 }
             }
         }
-        for (auto& pkt : packets)
-            ll::thread::ServerThreadExecutor::getDefault().execute([pkt] {
-                if (pkt && !pkt->mShapes->empty() && (*pkt->mShapes)[0].mLocation->has_value()
-                    && (*pkt->mShapes)[0].mDimensionId->has_value()) {
-                    pkt->sendTo(
-                        (*pkt->mShapes)[0].mLocation->value(),
-                        (*pkt->mShapes)[0].mDimensionId->value()
-                    );
-                }
+        for (auto& pkt : packets) {
+            ll::thread::ServerThreadExecutor::getDefault().execute([pkt, target] {
+                if (!pkt || pkt->mShapes->empty()) return;
+                auto const& shape = (*pkt->mShapes)[0];
+                if (!shape.mLocation->has_value() || !shape.mDimensionId->has_value()) return;
+                sendToPlayerAt(
+                    shape.mDimensionId->value(),
+                    shape.mLocation->value(),
+                    *pkt,
+                    target,
+                    SendMode::Direct
+                );
             });
+        }
     });
 }
 } // namespace bsci

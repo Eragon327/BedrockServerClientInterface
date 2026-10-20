@@ -9,6 +9,8 @@
 #include <mc/platform/UUID.h>
 #include <mc/world/actor/player/Player.h>
 
+namespace bsci {
+
 class Target {
 public:
     enum class Type { None, All, Players };
@@ -63,7 +65,6 @@ public:
         return mType == Type::None || (mType == Type::Players && mIds.empty());
     }
 
-    // 从显式目标中移除一个玩家；All/None 不变。返回是否发生了变化。
     bool erase(mce::UUID const& uuid) {
         if (mType != Type::Players) return false;
         auto const oldSize = mIds.size();
@@ -74,7 +75,7 @@ public:
 
     bool erase(Player const& player) { return erase(player.getUuid()); }
 
-    [[nodiscard]] static Target unite(Target const& lhs, Target const& rhs) {
+    [[nodiscard]] static Target merge(Target const& lhs, Target const& rhs) {
         if (lhs.mType == Type::All || rhs.mType == Type::All) return All();
         if (lhs.mType == Type::None) return rhs;
         if (rhs.mType == Type::None) return lhs;
@@ -94,3 +95,5 @@ private:
     Type                   mType = Type::None;
     std::vector<mce::UUID> mIds{};
 };
+
+} // namespace bsci

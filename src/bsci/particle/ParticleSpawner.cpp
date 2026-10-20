@@ -13,7 +13,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <mutex>
 #include <mc/deps/core/string/HashedString.h>
 #include <mc/deps/core/threading/Threading.h>
 #include <mc/legacy/ActorUniqueID.h>
@@ -31,6 +30,7 @@
 #include <mc/util/Timer.h>
 #include <mc/world/level/BlockPos.h>
 #include <mc/world/level/dimension/Dimension.h>
+#include <mutex>
 
 
 // MolangMemberArray::MolangMemberArray() = default;
