@@ -8,6 +8,7 @@
 
 namespace bsci {
 class ParticleSpawner : public GeometryGroup {
+    struct Entry;
     struct Impl;
     std::shared_ptr<Impl> impl;
 
@@ -15,7 +16,8 @@ class ParticleSpawner : public GeometryGroup {
         DimensionType      dim,
         Vec3 const&        pos,
         std::string const& name,
-        MolangVariableMap  var = {}
+        MolangVariableMap  var    = {},
+        Target const&      target = Target::All()
     ) const;
 
 public:
@@ -27,7 +29,8 @@ public:
         DimensionType        dim,
         Vec3 const&          pos,
         mce::Color const&    color  = mce::Color::WHITE(),
-        std::optional<float> radius = {}
+        std::optional<float> radius = {},
+        Target const&        target = Target::All()
     ) override;
 
     GeoId line(
@@ -35,7 +38,8 @@ public:
         Vec3 const&          begin,
         Vec3 const&          end,
         mce::Color const&    color     = mce::Color::WHITE(),
-        std::optional<float> thickness = {}
+        std::optional<float> thickness = {},
+        Target const&        target    = Target::All()
     ) override;
 
     bool remove(GeoId) override;

@@ -29,21 +29,30 @@ GeometryGroup::GeoId GeometryGroup::point(
     DimensionType        dim,
     Vec3 const&          pos,
     mce::Color const&    color,
-    std::optional<float> radius
+    std::optional<float> radius,
+    Target const&        target
 ) {
     auto const& config = BedrockServerClientInterface::getInstance().getConfig().particle;
-    return sphere(dim, pos, radius.value_or(config.defaultPointRadius), color);
+    return sphere(
+        dim,
+        pos,
+        radius.value_or(config.defaultPointRadius),
+        color,
+        std::nullopt,
+        target
+    );
 }
 GeometryGroup::GeoId GeometryGroup::line(
     DimensionType        dim,
     std::span<Vec3>      dots,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     std::vector<GeoId> ids;
     ids.reserve(dots.size() - 1);
-    for (auto [begin, end] : dots | std::views::pairwise) {
-        ids.emplace_back(line(dim, begin, end, color, thickness));
+    for (const auto& [begin, end] : dots | std::views::pairwise) {
+        ids.emplace_back(line(dim, begin, end, color, thickness, target));
     }
     return merge(ids);
 }
@@ -51,24 +60,25 @@ GeometryGroup::GeoId GeometryGroup::box(
     DimensionType        dim,
     AABB const&          box,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     // clang-format off
     auto ids = std::array{
-        line(dim, {box.min.x, box.min.y, box.min.z}, {box.min.x, box.min.y, box.max.z}, color, thickness),
-        line(dim, {box.max.x, box.min.y, box.min.z}, {box.max.x, box.min.y, box.max.z}, color, thickness),
-        line(dim, {box.min.x, box.max.y, box.min.z}, {box.min.x, box.max.y, box.max.z}, color, thickness),
-        line(dim, {box.max.x, box.max.y, box.min.z}, {box.max.x, box.max.y, box.max.z}, color, thickness),
+        line(dim, {box.min.x, box.min.y, box.min.z}, {box.min.x, box.min.y, box.max.z}, color, thickness, target),
+        line(dim, {box.max.x, box.min.y, box.min.z}, {box.max.x, box.min.y, box.max.z}, color, thickness, target),
+        line(dim, {box.min.x, box.max.y, box.min.z}, {box.min.x, box.max.y, box.max.z}, color, thickness, target),
+        line(dim, {box.max.x, box.max.y, box.min.z}, {box.max.x, box.max.y, box.max.z}, color, thickness, target),
 
-        line(dim, {box.min.x, box.min.y, box.min.z}, {box.min.x, box.max.y, box.min.z}, color, thickness),
-        line(dim, {box.max.x, box.min.y, box.min.z}, {box.max.x, box.max.y, box.min.z}, color, thickness),
-        line(dim, {box.min.x, box.min.y, box.max.z}, {box.min.x, box.max.y, box.max.z}, color, thickness),
-        line(dim, {box.max.x, box.min.y, box.max.z}, {box.max.x, box.max.y, box.max.z}, color, thickness),
+        line(dim, {box.min.x, box.min.y, box.min.z}, {box.min.x, box.max.y, box.min.z}, color, thickness, target),
+        line(dim, {box.max.x, box.min.y, box.min.z}, {box.max.x, box.max.y, box.min.z}, color, thickness, target),
+        line(dim, {box.min.x, box.min.y, box.max.z}, {box.min.x, box.max.y, box.max.z}, color, thickness, target),
+        line(dim, {box.max.x, box.min.y, box.max.z}, {box.max.x, box.max.y, box.max.z}, color, thickness, target),
 
-        line(dim, {box.min.x, box.min.y, box.min.z}, {box.max.x, box.min.y, box.min.z}, color, thickness),
-        line(dim, {box.min.x, box.max.y, box.min.z}, {box.max.x, box.max.y, box.min.z}, color, thickness),
-        line(dim, {box.min.x, box.min.y, box.max.z}, {box.max.x, box.min.y, box.max.z}, color, thickness),
-        line(dim, {box.min.x, box.max.y, box.max.z}, {box.max.x, box.max.y, box.max.z}, color, thickness),
+        line(dim, {box.min.x, box.min.y, box.min.z}, {box.max.x, box.min.y, box.min.z}, color, thickness, target),
+        line(dim, {box.min.x, box.max.y, box.min.z}, {box.max.x, box.max.y, box.min.z}, color, thickness, target),
+        line(dim, {box.min.x, box.min.y, box.max.z}, {box.max.x, box.min.y, box.max.z}, color, thickness, target),
+        line(dim, {box.min.x, box.max.y, box.max.z}, {box.max.x,	box.max.y,	box.max.z},	color,	thickness,	target),
     };
     // clang-format on
     return merge(ids);
@@ -79,7 +89,8 @@ GeometryGroup::GeoId GeometryGroup::circle(
     Vec3 const&          normal,
     float                radius,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     auto const& config = BedrockServerClientInterface::getInstance().getConfig().particle;
 
@@ -98,7 +109,7 @@ GeometryGroup::GeoId GeometryGroup::circle(
     for (size_t i{1}; i <= points; i++) {
         double theta = (double)i * delta;
         Vec3   pos   = t * (radius * std::cos(theta)) + b * radius * std::sin(theta);
-        ids.emplace_back(line(dim, center + lastPos, center + pos, color, thickness));
+        ids.emplace_back(line(dim, center + lastPos, center + pos, color, thickness, target));
         lastPos = pos;
     }
     return merge(ids);
@@ -109,7 +120,8 @@ GeometryGroup::GeoId GeometryGroup::cylinder(
     Vec3 const&          bottomCenter,
     float                radius,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     auto const& config = BedrockServerClientInterface::getInstance().getConfig().particle;
 
@@ -128,9 +140,11 @@ GeometryGroup::GeoId GeometryGroup::cylinder(
     for (size_t i{1}; i <= points; i++) {
         double theta = (double)i * delta;
         Vec3   pos   = t * (radius * std::cos(theta)) + b * radius * std::sin(theta);
-        ids.emplace_back(line(dim, topCenter + lastPos, topCenter + pos, color, thickness));
-        ids.emplace_back(line(dim, topCenter + pos, bottomCenter + pos, color, thickness));
-        ids.emplace_back(line(dim, bottomCenter + lastPos, bottomCenter + pos, color, thickness));
+        ids.emplace_back(line(dim, topCenter + lastPos, topCenter + pos, color, thickness, target));
+        ids.emplace_back(line(dim, topCenter + pos, bottomCenter + pos, color, thickness, target));
+        ids.emplace_back(
+            line(dim, bottomCenter + lastPos, bottomCenter + pos, color, thickness, target)
+        );
         lastPos = pos;
     }
     return merge(ids);
@@ -139,11 +153,13 @@ GeometryGroup::GeoId GeometryGroup::cylinder(
 static Vec3 cubeToSphere(Vec3 const& v) {
     auto v2 = v * v;
     return v
-         * sqrt(Vec3{
-             1 - (v2.y + v2.z) / 2 + (v2.y * v2.z) / 3,
-             1 - (v2.z + v2.x) / 2 + (v2.z * v2.x) / 3,
-             1 - (v2.x + v2.y) / 2 + (v2.x * v2.y) / 3
-         });
+         * sqrt(
+               Vec3{
+                   1 - (v2.y + v2.z) / 2 + (v2.y * v2.z) / 3,
+                   1 - (v2.z + v2.x) / 2 + (v2.z * v2.x) / 3,
+                   1 - (v2.x + v2.y) / 2 + (v2.x * v2.y) / 3
+               }
+         );
 }
 
 GeometryGroup::GeoId GeometryGroup::sphere(
@@ -151,7 +167,8 @@ GeometryGroup::GeoId GeometryGroup::sphere(
     Vec3 const&          center,
     float                radius,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     auto const& config = BedrockServerClientInterface::getInstance().getConfig().particle;
 
@@ -202,20 +219,33 @@ GeometryGroup::GeoId GeometryGroup::sphere(
         for (size_t i = 1; i <= cells; i++) {
             Vec3 pos = lerp(begin, end, {(float)i / (float)cells});
             pos      = center + cubeToSphere(pos) * radius;
-            ids.emplace_back(line(dim, lastPos, pos, color, thickness));
+            ids.emplace_back(line(dim, lastPos, pos, color, thickness, target));
             lastPos = pos;
         }
     }
     return merge(ids);
 }
 
-GeometryGroup::GeoId GeometryGroup::
-    arrow(DimensionType dim, Vec3 const& begin, Vec3 const& end, mce::Color const& color, std::optional<float>, std::optional<float>) {
-    return line(dim, begin, end, color);
+GeometryGroup::GeoId GeometryGroup::arrow(
+    DimensionType     dim,
+    Vec3 const&       begin,
+    Vec3 const&       end,
+    mce::Color const& color,
+    std::optional<float>,
+    std::optional<float>,
+    Target const& target
+) {
+    return line(dim, begin, end, color, std::nullopt, target);
 }
 
-GeometryGroup::GeoId GeometryGroup::
-    text(DimensionType, Vec3 const&, std::string, mce::Color const&, std::optional<float>) {
+GeometryGroup::GeoId GeometryGroup::text(
+    DimensionType,
+    Vec3 const&,
+    std::string const&,
+    mce::Color const&,
+    std::optional<float>,
+    Target const&
+) {
     return GeoId::invalid();
 }
 
@@ -226,7 +256,8 @@ GeometryGroup::GeoId GeometryGroup::cone(
     float                topRadius,
     float                bottomRadius,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     auto const& config = BedrockServerClientInterface::getInstance().getConfig().particle;
 
@@ -257,17 +288,18 @@ GeometryGroup::GeoId GeometryGroup::cone(
         Vec3   bottomOffset =
             t * (bottomRadius * std::cos(theta)) + b * bottomRadius * std::sin(theta);
         ids.emplace_back(
-            line(dim, topCenter + lastTopOffset, topCenter + topOffset, color, thickness)
+            line(dim, topCenter + lastTopOffset, topCenter + topOffset, color, thickness, target)
         );
         ids.emplace_back(
-            line(dim, topCenter + topOffset, bottomCenter + bottomOffset, color, thickness)
+            line(dim, topCenter + topOffset, bottomCenter + bottomOffset, color, thickness, target)
         );
         ids.emplace_back(line(
             dim,
             bottomCenter + lastBottomOffset,
             bottomCenter + bottomOffset,
             color,
-            thickness
+            thickness,
+            target
         ));
         lastTopOffset    = topOffset;
         lastBottomOffset = bottomOffset;

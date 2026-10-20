@@ -1,5 +1,6 @@
 #include "DebugDrawingHandler.h"
 #include "BedrockServerClientInterface.h"
+#include "bsci/utils/Utils.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -48,27 +49,31 @@ public:
         return a.first.value < b.value;
     }
 
-    void
-    addPacket(GeoId geoId, std::shared_ptr<PrimitiveShapesPacket>& packet, int dimId, Vec3 const& pos) {
+    void addPacket(
+        GeoId                                   geoId,
+        std::shared_ptr<PrimitiveShapesPacket>& packet,
+        int                                     dimId,
+        Vec3 const&                             pos
+    ) {
         if (packet) {
             geoPackets.emplace(geoId, std::vector<std::shared_ptr<PrimitiveShapesPacket>>{packet});
             auto chunkPos         = ChunkPos(pos);
             auto key              = std::make_pair(chunkPos, dimId);
-            auto [iter, inserted] = chunkPackets.try_emplace(key);
+            auto [node, inserted] = chunkPackets.try_emplace(key);
 
             if (inserted) {
-                iter->second.emplace_back(
+                node->second.emplace_back(
                     geoId,
                     std::vector<std::weak_ptr<PrimitiveShapesPacket>>{packet}
                 );
             } else {
                 auto it = std::lower_bound(
-                    iter->second.begin(),
-                    iter->second.end(),
+                    node->second.begin(),
+                    node->second.end(),
                     geoId,
                     compareByGeoId
                 );
-                iter->second
+                node->second
                     .emplace(it, geoId, std::vector<std::weak_ptr<PrimitiveShapesPacket>>{packet});
             }
         }
@@ -85,6 +90,7 @@ static std::recursive_mutex              listMutex;
 static std::vector<DebugDrawingHandler*> list;
 static std::atomic_bool                  hasInstance{false};
 
+// NOLINTNEXTLINE
 LL_TYPE_INSTANCE_HOOK(
     DebugDrawingHandler::Impl::Hook,
     ll::memory::HookPriority::Normal,
@@ -108,8 +114,9 @@ LL_TYPE_INSTANCE_HOOK(
             std::lock_guard l{listMutex};
 
             for (auto s : list) {
-                s->impl->chunkPackets.erase_if(key, [&_chunkPackets](auto&& iter) {
-                    std::erase_if(iter.second, [&_chunkPackets](auto&& packetPair) {
+                s->impl->chunkPackets.erase_if(key, [&_chunkPackets](auto&& kv) {
+                    auto& packetPairs = kv.second;
+                    std::erase_if(packetPairs, [&_chunkPackets](auto&& packetPair) {
                         _chunkPackets.reserve(_chunkPackets.size() + packetPair.second.size());
                         std::erase_if(packetPair.second, [&_chunkPackets](auto&& pkt) {
                             if (auto shared = pkt.lock()) {
@@ -120,7 +127,7 @@ LL_TYPE_INSTANCE_HOOK(
                         });
                         return packetPair.second.empty();
                     });
-                    return iter.second.empty();
+                    return packetPairs.empty();
                 });
             }
         }
@@ -148,11 +155,12 @@ DebugDrawingHandler::~DebugDrawingHandler() {
 }
 
 GeometryGroup::GeoId DebugDrawingHandler::line(
-    DimensionType     dim,
-    Vec3 const&       begin,
-    Vec3 const&       end,
-    mce::Color const& color,
-    std::optional<float> /*thickness*/
+    DimensionType        dim,
+    Vec3 const&          begin,
+    Vec3 const&          end,
+    mce::Color const&    color,
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     if (begin == end) return GeoId::invalid();
 
@@ -169,8 +177,8 @@ GeometryGroup::GeoId DebugDrawingHandler::line(
         shape.mDimensionId      = dim;
         shape.mExtraDataPayload = LineDataPayload{.mEndLocation = end};
         packet->mShapes->emplace_back(std::move(shape));
-        ll::thread::ServerThreadExecutor::getDefault().execute([packet, begin, dim] {
-            packet->sendTo(begin, dim);
+        ll::thread::ServerThreadExecutor::getDefault().execute([packet, begin, dim, target] {
+            sendToPlayerAt(dim, begin, *packet, target);
         });
 
         auto id = getNextGeoId();
@@ -178,7 +186,7 @@ GeometryGroup::GeoId DebugDrawingHandler::line(
         return id;
     }
 
-    int segmentNum   = ((int)len) / shapeDisplayRadius + 1;
+    int segmentNum   = static_cast<int>(len / static_cast<double>(shapeDisplayRadius)) + 1;
     offset          /= segmentNum;
     Vec3 currentPos  = begin;
     Vec3 lastPos     = begin;
@@ -187,10 +195,10 @@ GeometryGroup::GeoId DebugDrawingHandler::line(
     ids.reserve(segmentNum);
     for (int i = 0; i < segmentNum - 1; i++) {
         currentPos += offset;
-        ids.emplace_back(line(dim, lastPos, currentPos, color));
+        ids.emplace_back(line(dim, lastPos, currentPos, color, thickness, target));
         lastPos = currentPos;
     }
-    ids.emplace_back(line(dim, currentPos, end, color)); // 避免浮点误差
+    ids.emplace_back(line(dim, currentPos, end, color, thickness, target)); // 避免浮点误差
 
     return merge(ids);
 }
@@ -199,7 +207,8 @@ GeometryGroup::GeoId DebugDrawingHandler::box(
     DimensionType        dim,
     AABB const&          box,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     if ((box.max - box.min).lengthSqr() >= shapeDisplayRadius * shapeDisplayRadius)
         return Base::box(dim, box, color, thickness);
@@ -214,8 +223,8 @@ GeometryGroup::GeoId DebugDrawingHandler::box(
     shape.mDimensionId      = dim;
     shape.mExtraDataPayload = BoxDataPayload{.mBoxBound = box.max - box.min};
     packet->mShapes->emplace_back(std::move(shape));
-    ll::thread::ServerThreadExecutor::getDefault().execute([packet, begin = box.min, dim] {
-        packet->sendTo(begin, dim);
+    ll::thread::ServerThreadExecutor::getDefault().execute([packet, min = box.min, dim, target] {
+        sendToPlayerAt(dim, min, *packet, target);
     });
 
     auto id = getNextGeoId();
@@ -230,7 +239,8 @@ GeometryGroup::GeoId DebugDrawingHandler::circle(
     Vec3 const&          normal,
     float                radius,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     auto const& config = BedrockServerClientInterface::getInstance().getConfig().debugDraw;
 
@@ -249,8 +259,8 @@ GeometryGroup::GeoId DebugDrawingHandler::circle(
     shape.mColor       = color;
     shape.mDimensionId = dim;
     packet->mShapes->emplace_back(std::move(shape));
-    ll::thread::ServerThreadExecutor::getDefault().execute([packet, begin = center, dim] {
-        packet->sendTo(begin, dim);
+    ll::thread::ServerThreadExecutor::getDefault().execute([packet, center, dim, target] {
+        sendToPlayerAt(dim, center, *packet, target);
     });
 
     auto id = getNextGeoId();
@@ -263,12 +273,13 @@ GeometryGroup::GeoId DebugDrawingHandler::sphere(
     Vec3 const&          center,
     float                radius,
     mce::Color const&    color,
-    std::optional<float> thickness
+    std::optional<float> thickness,
+    Target const&        target
 ) {
     auto const& config = BedrockServerClientInterface::getInstance().getConfig().debugDraw;
 
     if (radius > shapeDisplayRadius || !config.useNativeSphere) {
-        return Base::sphere(dim, center, radius, color, thickness);
+        return Base::sphere(dim, center, radius, color, thickness, target);
     }
 
 
@@ -285,8 +296,8 @@ GeometryGroup::GeoId DebugDrawingHandler::sphere(
         shape.mExtraDataPayload = SphereDataPayload{.mNumSegments = config.sphereSegments.value()};
     }
     packet->mShapes->emplace_back(std::move(shape));
-    ll::thread::ServerThreadExecutor::getDefault().execute([packet, begin = center, dim] {
-        packet->sendTo(begin, dim);
+    ll::thread::ServerThreadExecutor::getDefault().execute([packet, center, dim, target] {
+        sendToPlayerAt(dim, center, *packet, target);
     });
 
     auto id = getNextGeoId();
@@ -300,7 +311,8 @@ GeometryGroup::GeoId DebugDrawingHandler::arrow(
     Vec3 const&          end,
     mce::Color const&    color,
     std::optional<float> mArrowHeadLength,
-    std::optional<float> mArrowHeadRadius
+    std::optional<float> mArrowHeadRadius,
+    Target const&        target
 ) {
     if (begin == end) return GeoId::invalid();
 
@@ -309,7 +321,7 @@ GeometryGroup::GeoId DebugDrawingHandler::arrow(
     if (len <= shapeDisplayRadius + 0.5) { // 防止浮点误差导致的无限递归
         auto packet = std::make_shared<PrimitiveShapesPacket>();
         packet->setSerializationMode(SerializationMode::CerealOnly);
-        auto const&      config = BedrockServerClientInterface::getInstance().getConfig().debugDraw;
+        auto const& config = BedrockServerClientInterface::getInstance().getConfig().debugDraw;
         PrimitiveShapeDataPayload shape;
         shape.mNetworkId        = nextId_.fetch_sub(1);
         shape.mShapeType        = ::ScriptModuleMinecraft::ScriptPrimitiveShapeType::Arrow;
@@ -323,8 +335,8 @@ GeometryGroup::GeoId DebugDrawingHandler::arrow(
             .mNumSegments     = config.arrowSegments
         };
         packet->mShapes->emplace_back(std::move(shape));
-        ll::thread::ServerThreadExecutor::getDefault().execute([packet, begin, dim] {
-            packet->sendTo(begin, dim);
+        ll::thread::ServerThreadExecutor::getDefault().execute([packet, begin, dim, target] {
+            sendToPlayerAt(dim, begin, *packet, target);
         });
 
         auto id = getNextGeoId();
@@ -332,10 +344,10 @@ GeometryGroup::GeoId DebugDrawingHandler::arrow(
         return id;
     }
 
-    int segmentNum                 = ((int)len) / shapeDisplayRadius + 1;
-    offset                        /= segmentNum;
-    Vec3               currentPos  = begin;
-    Vec3               lastPos     = begin;
+    int segmentNum  = static_cast<int>(len / static_cast<double>(shapeDisplayRadius)) + 1;
+    offset         /= segmentNum;
+    Vec3               currentPos = begin;
+    Vec3               lastPos    = begin;
     std::vector<GeoId> ids;
     ids.reserve(segmentNum);
     for (int i = 0; i < segmentNum - 1; i++) {
@@ -350,9 +362,10 @@ GeometryGroup::GeoId DebugDrawingHandler::arrow(
 GeometryGroup::GeoId DebugDrawingHandler::text(
     DimensionType        dim,
     Vec3 const&          pos,
-    std::string          text,
+    std::string const&   text,
     mce::Color const&    color,
-    std::optional<float> scale
+    std::optional<float> scale,
+    Target const&        target
 ) {
     auto packet = std::make_shared<PrimitiveShapesPacket>();
     packet->setSerializationMode(SerializationMode::CerealOnly);
@@ -364,11 +377,11 @@ GeometryGroup::GeoId DebugDrawingHandler::text(
     shape.mColor       = color;
     shape.mDimensionId = dim;
     TextDataPayload extraDataPayload;
-    extraDataPayload.mText  = std::move(text);
+    extraDataPayload.mText  = text;
     shape.mExtraDataPayload = std::move(extraDataPayload);
     packet->mShapes->emplace_back(std::move(shape));
-    ll::thread::ServerThreadExecutor::getDefault().execute([packet, begin = pos, dim] {
-        packet->sendTo(begin, dim);
+    ll::thread::ServerThreadExecutor::getDefault().execute([packet, pos, dim, target] {
+        sendToPlayerAt(dim, pos, *packet, target);
     });
 
     auto id = getNextGeoId();
@@ -381,28 +394,30 @@ bool DebugDrawingHandler::remove(GeoId id) {
         return false;
     }
     std::vector<std::shared_ptr<PrimitiveShapesPacket>> removePackets;
-    impl->geoPackets.erase_if(id, [this, id, &removePackets](auto&& iter) {
-        for (auto& packet : iter.second) {
+    impl->geoPackets.erase_if(id, [this, id, &removePackets](auto&& kv) {
+        auto& packets = kv.second;
+        for (auto& packet : packets) {
             if (packet && !packet->mShapes->empty() && (*packet->mShapes)[0].mLocation->has_value()
                 && (*packet->mShapes)[0].mDimensionId->has_value()) {
                 auto chunkPos = ChunkPos((*packet->mShapes)[0].mLocation->value());
                 auto dimId    = (int)(*packet->mShapes)[0].mDimensionId->value();
                 auto key      = std::make_pair(chunkPos, dimId);
-                impl->chunkPackets.erase_if(key, [this, id](auto&& iter) {
-                    auto it = std::lower_bound(
-                        iter.second.begin(),
-                        iter.second.end(),
+                impl->chunkPackets.erase_if(key, [id](auto&& chunkKv) {
+                    auto& packetPairs = chunkKv.second;
+                    auto  it          = std::lower_bound(
+                        packetPairs.begin(),
+                        packetPairs.end(),
                         id,
-                        impl->compareByGeoId
+                        DebugDrawingHandler::Impl::compareByGeoId
                     );
-                    if (it != iter.second.end() && it->first.value == id.value) {
-                        iter.second.erase(it);
+                    if (it != packetPairs.end() && it->first.value == id.value) {
+                        packetPairs.erase(it);
                     }
-                    return iter.second.empty();
+                    return packetPairs.empty();
                 });
             }
         }
-        removePackets = std::move(iter.second);
+        removePackets = std::move(packets);
         return true;
     });
     for (auto& packet : removePackets) {
@@ -421,31 +436,32 @@ GeometryGroup::GeoId DebugDrawingHandler::merge(std::span<GeoId> ids) {
         return GeoId::invalid();
     }
     ll::ConcurrentDenseMap<std::pair<ChunkPos, int>,
-                           std::vector<GeoId>>      temMap;     // 用来处理包的合并
+                           std::vector<GeoId>>          temMap;     // 用来处理包的合并
     std::vector<std::shared_ptr<PrimitiveShapesPacket>> newPackets; // 合并后的包队列
 
     // 移出旧id的geoPackets
     for (auto& id : ids) {
-        impl->geoPackets.erase_if(id, [id, &temMap, &newPackets](auto&& iter) {
+        impl->geoPackets.erase_if(id, [id, &temMap, &newPackets](auto&& kv) {
+            auto& packets = kv.second;
             // 处理包的合并
-            std::erase_if(iter.second, [&temMap, id](auto&& packet) {
+            std::erase_if(packets, [&temMap, id](auto&& packet) {
                 if (packet && !packet->mShapes->empty()
                     && (*packet->mShapes)[0].mLocation->has_value()
                     && (*packet->mShapes)[0].mDimensionId->has_value()) {
                     auto chunkPos         = ChunkPos((*packet->mShapes)[0].mLocation->value());
                     auto dimId            = (int)(*packet->mShapes)[0].mDimensionId->value();
                     auto key              = std::make_pair(chunkPos, dimId);
-                    auto [iter, inserted] = temMap.try_emplace(key);
+                    auto [node, inserted] = temMap.try_emplace(key);
 
                     // 记录对应区块待合并的GeoId
-                    iter->second.emplace_back(id);
+                    node->second.emplace_back(id);
                     return false;
                 } else return true;
             });
             newPackets.insert(
                 newPackets.end(),
-                std::make_move_iterator(iter.second.begin()),
-                std::make_move_iterator(iter.second.end())
+                std::make_move_iterator(packets.begin()),
+                std::make_move_iterator(packets.end())
             );
             return true;
         });
@@ -456,35 +472,36 @@ GeometryGroup::GeoId DebugDrawingHandler::merge(std::span<GeoId> ids) {
 
     // 处理chunkPackets
     for (auto& [key, data] : temMap) {
-        impl->chunkPackets.modify_if(key, [this, &data, &newId](auto&& iter) {
+        impl->chunkPackets.modify_if(key, [&data, &newId](auto&& kv) {
+            auto& packetPairs = kv.second;
             // 合并包
             std::vector<std::weak_ptr<PrimitiveShapesPacket>> pkts;
             for (auto& id : data) {
                 auto it = std::lower_bound(
-                    iter.second.begin(),
-                    iter.second.end(),
+                    packetPairs.begin(),
+                    packetPairs.end(),
                     id,
-                    impl->compareByGeoId
+                    DebugDrawingHandler::Impl::compareByGeoId
                 );
-                if (it != iter.second.end() && it->first.value == id.value) {
+                if (it != packetPairs.end() && it->first.value == id.value) {
                     pkts.insert(
                         pkts.end(),
                         std::make_move_iterator(it->second.begin()),
                         std::make_move_iterator(it->second.end())
                     );
-                    iter.second.erase(it);
+                    packetPairs.erase(it);
                 }
             }
             // 添加新的包
             std::pair<GeoId, std::vector<std::weak_ptr<PrimitiveShapesPacket>>> newPair =
                 std::make_pair(newId, std::move(pkts));
             auto it = std::lower_bound(
-                iter.second.begin(),
-                iter.second.end(),
+                packetPairs.begin(),
+                packetPairs.end(),
                 newId,
-                impl->compareByGeoId
+                DebugDrawingHandler::Impl::compareByGeoId
             );
-            iter.second.insert(it, std::move(newPair));
+            packetPairs.insert(it, std::move(newPair));
         });
     }
 
@@ -497,13 +514,14 @@ GeometryGroup::GeoId DebugDrawingHandler::merge(std::span<GeoId> ids) {
 bool DebugDrawingHandler::shift(GeoId id, Vec3 const& v) {
     if (id.value == 0) return false;
 
-    return impl->geoPackets.modify_if(id, [this, id, v](auto&& iter) {
+    return impl->geoPackets.modify_if(id, [this, id, v](auto&& kv) {
+        auto& packets = kv.second;
         ll::ConcurrentDenseMap<
             std::pair<ChunkPos, int>,
             std::vector<std::weak_ptr<PrimitiveShapesPacket>>>
             temMap; // 用来处理shape跨区块
 
-        std::erase_if(iter.second, [&temMap, &v](auto&& packet) {
+        std::erase_if(packets, [&temMap, &v](auto&& packet) {
             if (packet && !packet->mShapes->empty() && (*packet->mShapes)[0].mLocation->has_value()
                 && (*packet->mShapes)[0].mDimensionId->has_value()) {
                 auto chunkPos = ChunkPos((*packet->mShapes)[0].mLocation->value());
@@ -538,16 +556,17 @@ bool DebugDrawingHandler::shift(GeoId id, Vec3 const& v) {
         for (auto& [key, data] : temMap) {
             if (data.empty()) {
                 // 删
-                impl->chunkPackets.erase_if(key, [&id, this](auto&& iter) {
-                    auto it = std::lower_bound(
-                        iter.second.begin(),
-                        iter.second.end(),
+                impl->chunkPackets.erase_if(key, [&id](auto&& chunkKv) {
+                    auto& packetPairs = chunkKv.second;
+                    auto  it          = std::lower_bound(
+                        packetPairs.begin(),
+                        packetPairs.end(),
                         id,
-                        impl->compareByGeoId
+                        DebugDrawingHandler::Impl::compareByGeoId
                     );
-                    if (it != iter.second.end() && it->first.value == id.value)
-                        iter.second.erase(it);
-                    return iter.second.empty();
+                    if (it != packetPairs.end() && it->first.value == id.value)
+                        packetPairs.erase(it);
+                    return packetPairs.empty();
                 });
             }
             // 增改
@@ -560,7 +579,7 @@ bool DebugDrawingHandler::shift(GeoId id, Vec3 const& v) {
                         it->second.begin(),
                         it->second.end(),
                         id,
-                        impl->compareByGeoId
+                        DebugDrawingHandler::Impl::compareByGeoId
                     );
                     if (_it != it->second.end() && _it->first.value == id.value)
                         _it->second = std::move(data);
@@ -568,7 +587,7 @@ bool DebugDrawingHandler::shift(GeoId id, Vec3 const& v) {
                 }
             }
         }
-        for (auto& pkt : iter.second)
+        for (auto& pkt : packets)
             ll::thread::ServerThreadExecutor::getDefault().execute([pkt] {
                 if (pkt && !pkt->mShapes->empty() && (*pkt->mShapes)[0].mLocation->has_value()
                     && (*pkt->mShapes)[0].mDimensionId->has_value()) {
