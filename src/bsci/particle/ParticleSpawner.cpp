@@ -9,6 +9,7 @@
 #include <ll/api/service/GamingStatus.h>
 #include <ll/api/thread/ServerThreadExecutor.h>
 
+#include <algorithm>
 #include <atomic>
 #include <mc/deps/core/string/HashedString.h>
 #include <mc/deps/core/threading/Threading.h>
@@ -30,7 +31,7 @@
 
 
 // MolangMemberArray::MolangMemberArray() = default;
-MolangVariableMap::MolangVariableMap() = default;
+MolangVariableMap::MolangVariableMap() : mHasPublicVariables(false) {}
 // MolangScriptArg::MolangScriptArg() = default;
 // MolangVariableMap::MolangVariableMap(MolangVariableMap const& rhs) {
 //     mMapFromVariableIndexToVariableArrayOffset =
@@ -46,11 +47,19 @@ namespace bsci {
 //     return std::make_unique<ParticleSpawner>();
 // }
 
+static size_t clampedTablePerTick() {
+    return std::clamp<size_t>(
+        BedrockServerClientInterface::getInstance().getConfig().particle.tablePerTick,
+        1,
+        64
+    );
+}
+
 static void addTime(MolangVariableMap& var) {
     auto& config = BedrockServerClientInterface::getInstance().getConfig().particle;
     var.setMolangVariable(
         "variable.bsci_particle_lifetime",
-        (float)(config.extraTime + ((64.0 / 20.0) / (double)config.tablePerTick))
+        (float)(config.extraTime + ((64.0 / 20.0) / (double)clampedTablePerTick()))
     );
 }
 static void addSize(MolangVariableMap& var, Vec2 const& size) {
@@ -99,8 +108,7 @@ struct ParticleSpawner::Impl {
         if (!active.load(std::memory_order_acquire)) {
             return;
         }
-        auto const tablePerTick =
-            BedrockServerClientInterface::getInstance().getConfig().particle.tablePerTick;
+        auto const tablePerTick = clampedTablePerTick();
         auto begin = (tickId % (64 / tablePerTick)) * tablePerTick;
         for (size_t i = 0; i < tablePerTick; i++) {
             geoPackets.with_submap(begin + i, [&](auto& map) {
