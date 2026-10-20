@@ -45,20 +45,34 @@ MolangVariableMap::MolangVariableMap() : mHasPublicVariables(false) {}
 // }
 
 namespace bsci {
+constexpr size_t PacketsMapN = 6;
+constexpr size_t TablesCount = size_t{1} << PacketsMapN;
 
-static size_t clampedTablePerTick() {
+constexpr double TicksPerSecond    = 20.0;
+constexpr double MinRefreshSeconds = 1.0 / TicksPerSecond;
+constexpr double MaxRefreshSeconds = (double)TablesCount / TicksPerSecond;
+
+static size_t submapsPerTick(double refreshInterval) {
+    double const seconds = std::clamp(refreshInterval, MinRefreshSeconds, MaxRefreshSeconds);
+    double const cycle   = seconds * TicksPerSecond;
     return std::clamp<size_t>(
-        BedrockServerClientInterface::getInstance().getConfig().particle.tablePerTick,
-        1,
-        64
+        (size_t)std::llround((double)TablesCount / cycle),
+        size_t{1},
+        TablesCount
     );
+}
+
+static float particleLifetime(double refreshInterval, double extraTime) {
+    double const period =
+        (double)TablesCount / (double)submapsPerTick(refreshInterval) / TicksPerSecond;
+    return (float)(period + extraTime);
 }
 
 static void addTime(MolangVariableMap& var) {
     auto& config = BedrockServerClientInterface::getInstance().getConfig().particle;
     var.setMolangVariable(
         "variable.bsci_particle_lifetime",
-        (float)(config.extraTime + ((64.0 / 20.0) / (double)clampedTablePerTick()))
+        particleLifetime(config.refreshInterval, config.extraTime)
     );
 }
 static void addSize(MolangVariableMap& var, Vec2 const& size) {
@@ -92,11 +106,11 @@ struct ParticleSpawner::Impl {
         ::phmap::priv::hash_default_hash<GeoId>,
         ::phmap::priv::hash_default_eq<GeoId>,
         ::std::allocator<::std::pair<GeoId const, Entry>>,
-        6>;
+        PacketsMapN>;
     using GroupMap = ll::ConcurrentDenseMap<GeoId, std::vector<GeoId>>;
 
     std::atomic_bool       active{true};
-    size_t                 tickId{};
+    size_t                 nextSubMap{};
     ll::event::ListenerPtr listener;
     size_t                 id{};
     PacketsMap             geoPackets;
@@ -117,10 +131,11 @@ struct ParticleSpawner::Impl {
         if (!active.load(std::memory_order_acquire)) {
             return;
         }
-        auto const perTick = clampedTablePerTick();
-        auto const begin   = (tickId % (64 / perTick)) * perTick;
+        auto const perTick = submapsPerTick(
+            BedrockServerClientInterface::getInstance().getConfig().particle.refreshInterval
+        );
         for (size_t i = 0; i < perTick; i++) {
-            geoPackets.with_submap(begin + i, [&](auto& map) {
+            geoPackets.with_submap(nextSubMap, [&](auto& map) {
                 for (auto& [id, entry] : map) {
                     sendToPlayerAt(
                         entry.packet->mVanillaDimensionId,
@@ -130,8 +145,8 @@ struct ParticleSpawner::Impl {
                     );
                 }
             });
+            if (++nextSubMap == TablesCount) nextSubMap = 0;
         }
-        ++tickId;
     }
 };
 
