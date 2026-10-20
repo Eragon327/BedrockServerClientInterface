@@ -72,6 +72,8 @@ public:
 
     bool remove(GeoId) override;
 
+    size_t removeFor(mce::UUID const& uuid) override;
+
     GeoId merge(std::span<GeoId>) override;
 
     bool shift(GeoId, Vec3 const&) override;

@@ -25,6 +25,9 @@ GeometryGroup::GeoId GeometryGroup::getNextGeoId() const {
     static std::atomic_uint64_t id{};
     return {++id};
 }
+
+size_t GeometryGroup::removeFor(mce::UUID const&) { return 0; }
+
 GeometryGroup::GeoId GeometryGroup::point(
     DimensionType        dim,
     Vec3 const&          pos,

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <mutex>
 #include <mc/deps/core/string/HashedString.h>
 #include <mc/deps/core/threading/Threading.h>
 #include <mc/legacy/ActorUniqueID.h>
@@ -96,7 +97,7 @@ static void addDirection(MolangVariableMap& var, Vec3 const& dir) {
 
 struct ParticleSpawner::Entry {
     std::shared_ptr<SpawnParticleEffectPacket> packet;
-    std::shared_ptr<const Target>              target;
+    Target                                     target;
 };
 
 struct ParticleSpawner::Impl {
@@ -115,15 +116,16 @@ struct ParticleSpawner::Impl {
     size_t                 id{};
     PacketsMap             geoPackets;
     GroupMap               geoGroup;
+    std::recursive_mutex   structureMutex;
 
     void sendParticleImmediately(
         std::shared_ptr<SpawnParticleEffectPacket> const& packet,
-        std::shared_ptr<const Target> const&              target
+        Target const&                                     target
     ) {
         if (BedrockServerClientInterface::getInstance().getConfig().particle.delayUndate) return;
-        if (!packet || !target) return;
+        if (!packet) return;
         ll::thread::ServerThreadExecutor::getDefault().execute([packet, target] {
-            sendToPlayerAt(packet->mVanillaDimensionId, *packet->mPos, *packet, *target);
+            sendToPlayerAt(packet->mVanillaDimensionId, *packet->mPos, *packet, target);
         });
     }
 
@@ -141,7 +143,7 @@ struct ParticleSpawner::Impl {
                         entry.packet->mVanillaDimensionId,
                         *entry.packet->mPos,
                         *entry.packet,
-                        *entry.target
+                        entry.target
                     );
                 }
             });
@@ -177,10 +179,12 @@ GeometryGroup::GeoId ParticleSpawner::particle(
     addTime(var);
     auto packet =
         std::make_shared<SpawnParticleEffectPacket>(pos, name, (uchar)dim, std::move(var));
-    auto tgt = std::make_shared<const Target>(target);
-    impl->sendParticleImmediately(packet, tgt);
+    impl->sendParticleImmediately(packet, target);
     auto id = GeometryGroup::getNextGeoId();
-    impl->geoPackets.try_emplace(id, packet, tgt);
+    {
+        std::lock_guard l{impl->structureMutex};
+        impl->geoPackets.try_emplace(id, Entry{packet, target});
+    }
     return id;
 }
 
@@ -234,6 +238,7 @@ bool ParticleSpawner::remove(GeoId id) {
     if (id.value == 0) {
         return false;
     }
+    std::lock_guard l{impl->structureMutex};
     if (!impl->geoGroup.erase_if(id, [this](auto&& kv) {
             for (auto& subId : kv.second) {
                 impl->geoPackets.erase(subId);
@@ -245,10 +250,34 @@ bool ParticleSpawner::remove(GeoId id) {
     return true;
 }
 
+size_t ParticleSpawner::removeFor(mce::UUID const& uuid) {
+    std::lock_guard l{impl->structureMutex};
+
+    std::vector<GeoId> ids;
+    for (auto const& [id, entry] : impl->geoPackets) {
+        if (entry.target.type() == Target::Type::Players && entry.target.contains(uuid)) {
+            ids.emplace_back(id);
+        }
+    }
+
+    size_t count = 0;
+    for (auto id : ids) {
+        bool emptied = false;
+        impl->geoPackets.modify_if(id, [&uuid, &emptied](auto&& kv) {
+            kv.second.target.erase(uuid);
+            emptied = kv.second.target.empty();
+        });
+        if (emptied) impl->geoPackets.erase(id);
+        ++count;
+    }
+    return count;
+}
+
 GeometryGroup::GeoId ParticleSpawner::merge(std::span<GeoId> ids) {
     if (ids.empty()) {
         return GeoId::invalid();
     }
+    std::lock_guard    l{impl->structureMutex};
     auto               id = GeometryGroup::getNextGeoId();
     std::vector<GeoId> res;
     res.reserve(ids.size());
@@ -271,6 +300,7 @@ GeometryGroup::GeoId ParticleSpawner::merge(std::span<GeoId> ids) {
 }
 
 bool ParticleSpawner::shift(GeoId id, Vec3 const& deltaPos) {
+    std::lock_guard l{impl->structureMutex};
     if (!impl->geoGroup.modify_if(id, [this, &deltaPos](auto&& group) {
             for (auto& subId : group.second) {
                 impl->geoPackets.modify_if(subId, [this, &deltaPos](auto&& kv) {

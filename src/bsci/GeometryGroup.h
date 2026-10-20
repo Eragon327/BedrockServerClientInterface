@@ -46,6 +46,12 @@ public:
 
     virtual bool remove(GeoId) = 0;
 
+    // 把该玩家从所有显式目标里摘除；Target::All 的形状保持不变。
+    // 返回受影响的形状数量。
+    BSCI_API virtual size_t removeFor(mce::UUID const& uuid);
+
+    BSCI_API size_t removeFor(Player const& player) { return removeFor(player.getUuid()); }
+
     virtual GeoId merge(std::span<GeoId>) = 0;
 
     virtual bool shift(GeoId, Vec3 const&) = 0;

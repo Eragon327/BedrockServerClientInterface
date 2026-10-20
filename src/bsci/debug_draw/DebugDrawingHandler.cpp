@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <variant>
@@ -46,6 +47,7 @@ public:
     ll::ConcurrentDenseMap<std::pair<ChunkPos, int>, std::vector<PacketPair>>
         chunkPackets; // 不应包含使用ParticleSpawner的GeoId
     ll::ConcurrentDenseMap<GeoId, Target> targets;
+    std::recursive_mutex                 structureMutex;
 
 public:
     // void sendPacketImmediately(DebugDrawerPacket& pkt) {
@@ -55,6 +57,18 @@ public:
 
     static bool compareByGeoId(const PacketPair& a, const GeoId& b) {
         return a.first.value < b.value;
+    }
+
+    void unindexPacket(GeoId geoId, std::shared_ptr<PrimitiveShapesPacket> const& packet) {
+        if (!packet || packet->mShapes->empty()) return;
+        auto const& shape = (*packet->mShapes)[0];
+        if (!shape.mLocation->has_value() || !shape.mDimensionId->has_value()) return;
+        auto key = std::make_pair(ChunkPos(shape.mLocation->value()), (int)shape.mDimensionId->value());
+        chunkPackets.erase_if(key, [geoId](auto&& kv) {
+            auto& packetPairs = kv.second;
+            std::erase_if(packetPairs, [geoId](auto&& pair) { return pair.first.value == geoId.value; });
+            return packetPairs.empty();
+        });
     }
 
     [[nodiscard]] bool isVisibleTo(GeoId geoId, Player const& player) const {
@@ -70,6 +84,7 @@ public:
         Vec3 const&                             pos,
         Target const&                           target
     ) {
+        std::lock_guard l{structureMutex};
         if (packet) {
             geoPackets.emplace(geoId, std::vector<std::shared_ptr<PrimitiveShapesPacket>>{packet});
             targets.emplace(geoId, target);
@@ -430,38 +445,39 @@ bool DebugDrawingHandler::remove(GeoId id) {
     if (id.value == 0) {
         return false;
     }
-    std::vector<std::shared_ptr<PrimitiveShapesPacket>> removePackets;
-    impl->geoPackets.erase_if(id, [this, id, &removePackets](auto&& kv) {
-        auto& packets = kv.second;
-        for (auto& packet : packets) {
-            if (packet && !packet->mShapes->empty() && (*packet->mShapes)[0].mLocation->has_value()
-                && (*packet->mShapes)[0].mDimensionId->has_value()) {
-                auto chunkPos = ChunkPos((*packet->mShapes)[0].mLocation->value());
-                auto dimId    = (int)(*packet->mShapes)[0].mDimensionId->value();
-                auto key      = std::make_pair(chunkPos, dimId);
-                impl->chunkPackets.erase_if(key, [id](auto&& chunkKv) {
-                    auto& packetPairs = chunkKv.second;
-                    auto  it          = std::lower_bound(
-                        packetPairs.begin(),
-                        packetPairs.end(),
-                        id,
-                        DebugDrawingHandler::Impl::compareByGeoId
-                    );
-                    if (it != packetPairs.end() && it->first.value == id.value) {
-                        packetPairs.erase(it);
-                    }
-                    return packetPairs.empty();
-                });
-            }
-        }
-        removePackets = std::move(packets);
+
+    std::lock_guard l{impl->structureMutex};
+
+    Target target = Target::All();
+    impl->targets.erase_if(id, [&target](auto&& kv) {
+        target = kv.second;
         return true;
     });
-    impl->targets.erase(id);
+
+    std::vector<std::shared_ptr<PrimitiveShapesPacket>> removePackets;
+    impl->geoPackets.erase_if(id, [&removePackets](auto&& kv) {
+        removePackets = std::move(kv.second);
+        return true;
+    });
+
     for (auto& packet : removePackets) {
-        ll::thread::ServerThreadExecutor::getDefault().execute([packet] {
-            if (packet) {
-                for (auto& shape : *packet->mShapes) shape.mShapeType = std::nullopt;
+        impl->unindexPacket(id, packet);
+        ll::thread::ServerThreadExecutor::getDefault().execute([packet, target] {
+            if (!packet || packet->mShapes->empty()) return;
+            for (auto& s : *packet->mShapes) s.mShapeType = std::nullopt;
+
+            auto const& shape = (*packet->mShapes)[0];
+            if (target.type() == Target::Type::Players) {
+                if (shape.mLocation->has_value() && shape.mDimensionId->has_value()) {
+                    sendToPlayerAt(
+                        shape.mDimensionId->value(),
+                        shape.mLocation->value(),
+                        *packet,
+                        target,
+                        SendMode::Direct
+                    );
+                }
+            } else {
                 packet->sendToClients();
             }
         });
@@ -469,10 +485,63 @@ bool DebugDrawingHandler::remove(GeoId id) {
     return true;
 }
 
+size_t DebugDrawingHandler::removeFor(mce::UUID const& uuid) {
+    std::lock_guard l{impl->structureMutex};
+
+    std::vector<GeoId> ids;
+    for (auto const& [id, target] : impl->targets) {
+        if (target.type() == Target::Type::Players && target.contains(uuid)) {
+            ids.emplace_back(id);
+        }
+    }
+    if (ids.empty()) return 0;
+
+    Target const onlyPlayer{uuid};
+    size_t       count = 0;
+
+    for (auto id : ids) {
+        std::vector<std::shared_ptr<PrimitiveShapesPacket>> packets;
+        impl->geoPackets.modify_if(id, [&packets](auto&& kv) { packets = kv.second; });
+        if (packets.empty()) {
+            impl->targets.erase(id);
+            continue;
+        }
+
+        bool const emptied = impl->targets.erase_if(id, [&uuid](auto&& kv) {
+            kv.second.erase(uuid);
+            return kv.second.empty();
+        });
+        if (emptied) impl->geoPackets.erase(id);
+
+        for (auto& packet : packets) {
+            if (emptied) impl->unindexPacket(id, packet);
+
+            // 形状仍对其他人可见时，不能改原包，复制一份只给被摘掉的玩家
+            std::shared_ptr<PrimitiveShapesPacket> removal = packet;
+            if (!emptied) removal = std::make_shared<PrimitiveShapesPacket>(*packet);
+            if (!removal || removal->mShapes->empty()) continue;
+
+            auto const& shape = (*removal->mShapes)[0];
+            if (!shape.mLocation->has_value() || !shape.mDimensionId->has_value()) continue;
+
+            auto const dim = shape.mDimensionId->value();
+            auto const pos = shape.mLocation->value();
+            for (auto& s : *removal->mShapes) s.mShapeType = std::nullopt;
+
+            ll::thread::ServerThreadExecutor::getDefault().execute([removal, dim, pos, onlyPlayer] {
+                sendToPlayerAt(dim, pos, *removal, onlyPlayer, SendMode::Direct);
+            });
+        }
+        ++count;
+    }
+    return count;
+}
+
 GeometryGroup::GeoId DebugDrawingHandler::merge(std::span<GeoId> ids) {
     if (ids.empty()) {
         return GeoId::invalid();
     }
+    std::lock_guard l{impl->structureMutex};
     ll::ConcurrentDenseMap<std::pair<ChunkPos, int>,
                            std::vector<GeoId>>          temMap;     // 用来处理包的合并
     std::vector<std::shared_ptr<PrimitiveShapesPacket>> newPackets; // 合并后的包队列
@@ -558,6 +627,7 @@ GeometryGroup::GeoId DebugDrawingHandler::merge(std::span<GeoId> ids) {
 bool DebugDrawingHandler::shift(GeoId id, Vec3 const& v) {
     if (id.value == 0) return false;
 
+    std::lock_guard l{impl->structureMutex};
     return impl->geoPackets.modify_if(id, [this, id, v](auto&& kv) {
         auto& packets = kv.second;
         ll::ConcurrentDenseMap<

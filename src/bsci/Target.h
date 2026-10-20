@@ -17,6 +17,8 @@ public:
 
     Target(Player const& player) : mType(Type::Players) { mIds.emplace_back(player.getUuid()); }
 
+    Target(mce::UUID const& uuid) : mType(Type::Players) { mIds.emplace_back(uuid); }
+
     Target(Player* player) : mType(Type::Players) {
         if (player) {
             mIds.emplace_back(player->getUuid());
@@ -49,12 +51,28 @@ public:
 
     [[nodiscard]] std::span<mce::UUID const> ids() const noexcept { return mIds; }
 
-    [[nodiscard]] bool contains(Player const& player) const {
+    [[nodiscard]] bool contains(Player const& player) const { return contains(player.getUuid()); }
+
+    [[nodiscard]] bool contains(mce::UUID const& uuid) const {
         if (mType == Type::All) return true;
         if (mType != Type::Players) return false;
-        auto const& uuid = player.getUuid();
         return std::find(mIds.begin(), mIds.end(), uuid) != mIds.end();
     }
+
+    [[nodiscard]] bool empty() const noexcept {
+        return mType == Type::None || (mType == Type::Players && mIds.empty());
+    }
+
+    // 从显式目标中移除一个玩家；All/None 不变。返回是否发生了变化。
+    bool erase(mce::UUID const& uuid) {
+        if (mType != Type::Players) return false;
+        auto const oldSize = mIds.size();
+        std::erase(mIds, uuid);
+        if (mIds.empty()) mType = Type::None;
+        return mIds.size() != oldSize;
+    }
+
+    bool erase(Player const& player) { return erase(player.getUuid()); }
 
     [[nodiscard]] static Target unite(Target const& lhs, Target const& rhs) {
         if (lhs.mType == Type::All || rhs.mType == Type::All) return All();
