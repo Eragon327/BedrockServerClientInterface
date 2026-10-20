@@ -1,10 +1,12 @@
 #pragma once
 
 #include "bsci/Marcos.h"
-#include "mc/world/phys/AABB.h"
+#include "bsci/Target.h"
 
 #include <mc/deps/core/math/Color.h>
 #include <mc/world/level/dimension/DimensionType.h>
+#include <mc/world/phys/AABB.h>
+
 
 namespace bsci {
 class GeometryGroup {
@@ -29,7 +31,8 @@ public:
         DimensionType        dim,
         Vec3 const&          pos,
         mce::Color const&    color  = mce::Color::WHITE(),
-        std::optional<float> radius = {}
+        std::optional<float> radius = {},
+        Target const&        target = Target::All()
     );
 
     virtual GeoId line(
@@ -37,7 +40,8 @@ public:
         Vec3 const&          begin,
         Vec3 const&          end,
         mce::Color const&    color     = mce::Color::WHITE(),
-        std::optional<float> thickness = {}
+        std::optional<float> thickness = {},
+        Target const&        target    = Target::All()
     ) = 0;
 
     virtual bool remove(GeoId) = 0;
@@ -50,14 +54,16 @@ public:
         DimensionType        dim,
         std::span<Vec3>      dots,
         mce::Color const&    color     = mce::Color::WHITE(),
-        std::optional<float> thickness = {}
+        std::optional<float> thickness = {},
+        Target const&        target    = Target::All()
     );
 
     BSCI_API virtual GeoId
     box(DimensionType        dim,
         AABB const&          box,
         mce::Color const&    color     = mce::Color::WHITE(),
-        std::optional<float> thickness = {});
+        std::optional<float> thickness = {},
+        Target const&        target    = Target::All());
 
     BSCI_API virtual GeoId circle(
         DimensionType        dim,
@@ -65,7 +71,8 @@ public:
         Vec3 const&          normal,
         float                radius,
         mce::Color const&    color     = mce::Color::WHITE(),
-        std::optional<float> thickness = {}
+        std::optional<float> thickness = {},
+        Target const&        target    = Target::All()
     );
 
     BSCI_API virtual GeoId cylinder(
@@ -74,7 +81,8 @@ public:
         Vec3 const&          bottomCenter,
         float                radius,
         mce::Color const&    color     = mce::Color::WHITE(),
-        std::optional<float> thickness = {}
+        std::optional<float> thickness = {},
+        Target const&        target    = Target::All()
     );
 
     BSCI_API virtual GeoId sphere(
@@ -82,7 +90,8 @@ public:
         Vec3 const&          center,
         float                radius,
         mce::Color const&    color     = mce::Color::WHITE(),
-        std::optional<float> thickness = {}
+        std::optional<float> thickness = {},
+        Target const&        target    = Target::All()
     );
 
     BSCI_API virtual GeoId arrow(
@@ -91,15 +100,17 @@ public:
         Vec3 const&          end,
         mce::Color const&    color            = mce::Color::WHITE(),
         std::optional<float> mArrowHeadLength = {},
-        std::optional<float> mArrowHeadRadius = {}
+        std::optional<float> mArrowHeadRadius = {},
+        Target const&        target           = Target::All()
     );
 
     BSCI_API virtual GeoId text(
         DimensionType        dim,
         Vec3 const&          pos,
-        std::string          text,
-        mce::Color const&    color = mce::Color::WHITE(),
-        std::optional<float> scale = {}
+        std::string const&   text,
+        mce::Color const&    color  = mce::Color::WHITE(),
+        std::optional<float> scale  = {},
+        Target const&        target = Target::All()
     );
 
     BSCI_API virtual GeoId cone(
@@ -109,7 +120,8 @@ public:
         float                topRadius,
         float                bottomRadius,
         mce::Color const&    color     = mce::Color::WHITE(),
-        std::optional<float> thickness = {}
+        std::optional<float> thickness = {},
+        Target const&        target    = Target::All()
     );
 };
 } // namespace bsci
